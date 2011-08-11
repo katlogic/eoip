@@ -30,7 +30,11 @@ Usage
     # apt-get install uml-utilities
     # tunctl -t tap0
     # eoip
-    eoip [-f] <intf> [<local> [<remote>:<tunnelid> <remote:tunnelid...>]]
+    eoip [-f] [-s /tmp/statusfile] <intf> [<local> [<remote>:<tunnelid> <remote:tunnelid...>]]
+    Flags:
+            -f      filter switch ports
+            -t N    mac address timeout (seconds, 1800 by default)
+            -s path store connected status and mac learning reports in here
 
 Example:
 
@@ -49,14 +53,14 @@ Modes of operation
   `eoip tap0 localip remoteip1:1234 remoteip2:1235 ....`
 * Open, single tunnel:
   `eoip tap0 localip 0.0.0.0:1234`
-* Open, multiple tunnels:
+* Open, multiple/unlimited tunnels:
   `eoip tap0 localip`
+* Open, multiple predefined tunnels:
+  `eoip tap0 localip 0.0.0.0:1234 0.0.0.0:1235`
 
 In "open" mode remote peer is learned via incoming packet (tunnelIDs being used to distinguish between each other).
 
 In "multiple" mode, all tunnels will be bridged together exactly like STP unaware ethernet switch.
 
 Flag '-f' prevents virtual "ports" from talking with each other to prevent packet storms - that means only the tap interface itself will be reachable.
-
-Flag '-r N' sets limits of packet reassembly backlog (per tunnel), 128 by default.
 
