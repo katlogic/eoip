@@ -61,14 +61,14 @@
 /* virtual switch port */
 struct	peer {
 	struct peer *next;
-	uint32_t ip; /* ip */
-	uint32_t tid; /* id tunelu */
-	int count; /* pocet mac adres */
+	uint32_t ip;
+	uint16_t tid;
+	int count;
 };
 
 /* tunnel<->mac association */
 struct macpair {
-	int rx, tx; /* used for bandwith usage reporting */
+	int rx, tx; /* TBD used for bandwith usage reporting */
 	struct macpair *next; /* next in bucket hash */
 	struct peer *port;
 	time_t last;
@@ -90,7 +90,7 @@ static struct peer *peertab[HASHSZ];
 static int mactimeout = 1800;
 static int filtering = 0;
 static int fixedmode = 0;
-static FILE *statusfile = NULL;
+static char *statusfile = NULL;
 
 /* list of currently connected tunnels */
 
@@ -110,22 +110,22 @@ static	char *ip2s(uint32_t ip)
 static	struct peer *port_get(uint32_t ip, uint16_t tid, int inc)
 {
 	struct peer *curr;
-	DEBUG("port add %08x\n", ntohl(port));
+	DEBUG("port add %d\n", tid);
 	
-	for (curr = peertab[tid & HASHSZ]; curr; curr = curr->next) {
+	for (curr = peertab[tid % HASHSZ]; curr; curr = curr->next) {
 		if (curr->tid == tid) {
 			curr->count+=inc;
 			DEBUG(" -> count %d\n", curr->count);
 			return curr;
 		}
 	}
-	if (!ip) return NULL;
+	if (fixedmode==2) return NULL;
 	curr = malloc(sizeof(*curr));
 	curr->ip = ip;
 	curr->count = inc;
-	curr->next = peertab[tid&HASHSZ];
+	curr->next = peertab[tid%HASHSZ];
 	curr->tid = tid;
-	peertab[tid&HASHSZ] = curr;
+	peertab[tid%HASHSZ] = curr;
 	LOG("REG/Discovered peer/" PORTF, PORTA(curr));
 	return curr;
 }
@@ -134,14 +134,14 @@ static	struct peer *port_get(uint32_t ip, uint16_t tid, int inc)
 static	void port_put(uint16_t tid)
 {
 	struct peer *curr, *prev = NULL;
-	DEBUG("port del %08x\n", ntohl(port->ip));
-	for (curr = peertab[tid & HASHSZ]; curr; prev = curr, curr = curr->next) {
+	DEBUG("port del %d\n", tid);
+	for (curr = peertab[tid % HASHSZ]; curr; prev = curr, curr = curr->next) {
 		if (curr->tid == tid) {
 			if (--curr->count <= 0) {
 				LOG("UNREG/Removed peer/" PORTF, PORTA(curr));
-				DEBUG("  -> count 0, freeing\n");
+				DEBUG("  -> count 0, freeing, %p\n", curr->next);
 				if (!prev) {
-					peertab[tid&HASHSZ] = curr->next;
+					peertab[tid%HASHSZ] = curr->next;
 				} else {
 					prev->next = curr->next;
 				}
@@ -192,13 +192,13 @@ static struct peer *dstfind(uint8_t *mac)
 }
 
 /* learn a mac addr. returns pair if known */
-static	struct macpair *srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int len)
+static	int srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int len)
 {
 	uint32_t key = machash(mac);
 	struct macpair *mp;
 
 	/* but not multicasts */
-	if (mac[0] & 0x1) return NULL;
+	if (mac[0] & 0x1) return 1;
 
 	/* already got it? */
 	for (mp = mactab[key]; mp; mp = mp->next)
@@ -206,11 +206,13 @@ static	struct macpair *srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int
 
 	/* nope. */
 	if (!mp) {
+		struct peer *np = port_get(port, porttid, 1);
+		if (!np) return 0;
 		DEBUG("new mac " MACF "\n", MACA(mac));
 		mp = malloc(sizeof(*mp));
 		mp->rx = mp->tx = 0;
 		mp->next = mactab[key];
-		mp->port = port_get(port, porttid, 1);
+		mp->port = np;
 		memcpy(mp->mac, mac, 6);
 		mactab[key] = mp;
 		LOG("NEWMAC/New mac on port/" MACF "/" PORTF, MACA(mac), PORTA(mp->port));
@@ -220,13 +222,14 @@ static	struct macpair *srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int
 	/* mac moved */
 	if (mp->port->tid != porttid) {
 		struct peer *newport = port_get(port, porttid, 1);
+		if (!newport) return 0;
 		LOG("MOVEMAC: Moved mac between ports/" MACF "/" PORTF "/" PORTF "", MACA(mac), PORTA(mp->port), PORTA(newport));
 		port_put(mp->port->tid);
 		mp->port = newport;
 	}
-	if (!fixedmode)
+	if (fixedmode!=2 || mp->port->ip==0)
 		mp->port->ip = port;
-	return mp;
+	return 1;
 }
 
 /* send a packet to the destination port */
@@ -243,7 +246,10 @@ void	packet_send(struct peer *dst, uint16_t src, uint8_t *p, int len)
 		int i;
 		for (i = 0; i < HASHSZ; i++) {
 			for (dst = peertab[i]; dst; dst = dst->next)
-				packet_send(dst, src, p, len);
+				/* in case of broadcast filter, flood only
+				   the tap iface, or everyone if source is tap */
+				if (!filtering || ((!dst->tid) || (!src)))
+					packet_send(dst, src, p, len);
 		}
 		return;
 	}
@@ -259,6 +265,7 @@ void	packet_send(struct peer *dst, uint16_t src, uint8_t *p, int len)
 	}
 
 	/* regular peer */
+	if (!dst->ip) return; /* not associated yet */
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = dst->ip;
@@ -275,7 +282,7 @@ void	packet_send(struct peer *dst, uint16_t src, uint8_t *p, int len)
 /* receive one packet */
 void	receive_packet(uint8_t *p, int len, uint32_t srcip, uint16_t srctid)
 {
-	srcadd(p+6, srcip, srctid, len);
+	if (!srcadd(p+6, srcip, srctid, len)) return;
 	packet_send(dstfind(p), srctid, p, len);
 }
 
@@ -298,16 +305,36 @@ void	collect_garbage()
 			}
 			prev = mp;
 		}
+	}
+	if (statusfile) {
+		struct peer *peer;
+		struct macpair *mac;
+		int i;
+		FILE *f = fopen(statusfile, "w+");
 
+		for (i = 0; i < HASHSZ; i++) {
+			for (peer = peertab[i]; peer; peer = peer->next) {
+				fprintf(f, "%s %d\n", ip2s(peer->ip), peer->tid);
+			}
+		}
+		fprintf(f, "\n");
+		for (i = 0; i < HASHSZ; i++) {
+			for (mac = mactab[i]; mac; mac = mac->next) {
+				fprintf(f, "%d " MACF "\n", mac->port->tid, MACA(mac->mac));
+			}
+		}
+		fclose(f);
 	}
 }
 
 void usage(char *a0)
 {
-	fprintf(stderr,"Flags:\n"
+	fprintf(stderr,
+		"%s [-f] [-s /tmp/statusfile] <intf> [<local> [<remote>:<tunnelid> <remote:tunnelid...>]]\n"
+		"Flags:\n"
 		"\t-f\tfilter switch ports\n"
 		"\t-t N\tmac address timeout (seconds, 1800 by default)\n"
-		"\t-s path\tstore connected status and mac learning reports in here\n");
+		"\t-s path\tstore connected status and mac learning reports in here\n",a0);
 	exit(254);
 }
 
@@ -325,7 +352,7 @@ int main(int argc, char *argv[])
 		struct iphdr ip;
 	} pkt;
 
-	while ((c = getopt(argc, argv, "fr:t:s:"))) switch (c) {
+	while ((c = getopt(argc, argv, "fr:t:s:"))!=-1) switch (c) {
 		case 'f':
 			filtering=1;
 			break;
@@ -333,28 +360,32 @@ int main(int argc, char *argv[])
 			mactimeout=atoi(optarg);
 			break;
 		case 's':
-			statusfile=fopen(optarg,"w+");
+			statusfile=optarg;
 			break;
 		default:
 			usage(argv[0]);
 	}
 
 	setbuf(stdout, NULL);
+	DEBUG("%d %d\n",argc,optind);
 	if (argc-optind < 2) usage(argv[0]);
 	fdtap = opentun(IFF_TAP|IFF_NO_PI, argv[optind++]);
 	myip = inet_addr(argv[optind++]);
 
+	port_get(0,0,1);
 	for (;optind < argc; optind++) {
 		in_addr_t peer = inet_addr(strtok(argv[optind],":"));
 		/* tunnel ip addresses will be locked */
-		if (peer)
-			fixedmode=1;
-		port_get(peer, atoi(strtok(NULL, ":")),1);
+		fixedmode=1;
+		assert(port_get(peer, atoi(strtok(NULL, ":")),1));
 	}
+	fixedmode=fixedmode*2;
+	if (fixedmode==2)
+		LOG("FIXED/Running in fixed mode");
 
 	fdraw = socket(AF_INET, SOCK_RAW, 47);
 	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = inet_addr(argv[2]);
+	sin.sin_addr.s_addr = myip;
 	sin.sin_port = htons(47);
 	assert(bind(fdraw, (struct sockaddr*)&sin, sizeof(sin))==0);
 
@@ -385,11 +416,10 @@ int main(int argc, char *argv[])
 		/* got GRE packet */
 		if (FD_ISSET(fdraw, &fds)) {
 			uint16_t tid;
-			socklen_t sinlen = sizeof(sin);
-			len = recvfrom(fdraw, pkt.buf, sizeof(pkt), 0, (struct sockaddr *) &sin, &sinlen);
+			len = recv(fdraw, pkt.buf, sizeof(pkt), 0);
 
 			/* but not for us */
-			if (sin.sin_addr.s_addr != myip) continue;
+			if (pkt.ip.daddr != myip) continue;
 
 			/* move past ip header */
 			p = pkt.buf + pkt.ip.ihl*4; len -= pkt.ip.ihl*4;
@@ -406,14 +436,18 @@ int main(int argc, char *argv[])
 			tid = ((uint16_t *) p)[-1]; /* klic */
 
 			/* IP hdr/eoip length mismatch */
-			if (len != ntohs(p[-2])) continue;
+			if (len != ntohs(((uint16_t*)p)[-2])) {
+				DEBUG("%d %d\n",len,ntohs(((uint16_t*)p)[-2]));
+				continue;
+			}
 #if DUMPING
 			int i;
 			DEBUG("len=%d\n",len);
 			for (i = 0; i < len; i++) DEBUG("%02hhx ", p[i]);
 			DEBUG("\n\n");
 #endif
-			receive_packet(p, len,sin.sin_addr.s_addr, tid);
+			if (len >= 12)
+				receive_packet(p, len,pkt.ip.saddr, tid);
 		}
 		/* local tap */
 		if (FD_ISSET(fdtap, &fds)) {
