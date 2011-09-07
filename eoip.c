@@ -47,7 +47,7 @@
 #define DUMPING 1
 
 
-#if 1
+#if 0
 #define DEBUG printf
 #else
 #define DEBUG(x...)
@@ -80,9 +80,14 @@ struct macpair {
 struct gre_packet {
 	uint8_t magic[4];
 	uint16_t len;
-	uint16_t tid;
+	uint32_t tid;
 	char data[0];
 };
+struct eip_packet {
+	uint16_t stuff;
+	char data[0];
+};
+
 
 
 /* virtual switch CAM */
@@ -110,7 +115,7 @@ static	char *ip2s(uint32_t ip)
 }
 
 /* register new tunnel (optionally increment usage coutn) */
-static	struct peer *port_get(uint32_t ip, uint16_t tid, int inc)
+static	struct peer *port_get(uint32_t ip, uint32_t tid, int inc)
 {
 	struct peer *curr;
 	DEBUG("port add %d\n", tid);
@@ -134,7 +139,7 @@ static	struct peer *port_get(uint32_t ip, uint16_t tid, int inc)
 }
 
 /* remove port */
-static	void port_put(uint16_t tid)
+static	void port_put(uint32_t tid)
 {
 	struct peer *curr, *prev = NULL;
 	DEBUG("port del %d\n", tid);
@@ -195,7 +200,7 @@ static struct peer *dstfind(uint8_t *mac)
 }
 
 /* learn a mac addr. returns pair if known */
-static	int srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int len)
+static	int srcadd(uint8_t *mac, uint32_t port, uint32_t porttid, int len)
 {
 	uint32_t key = machash(mac);
 	struct macpair *mp;
@@ -236,10 +241,11 @@ static	int srcadd(uint8_t *mac, uint32_t port, uint16_t porttid, int len)
 }
 
 /* send a packet to the destination port */
-void	packet_send(struct peer *dst, uint16_t src, uint8_t *p, int len)
+void	packet_send(struct peer *dst, uint32_t src, uint8_t *p, int len)
 {
 	union {
 		struct gre_packet gre;
+		struct eip_packet eip;
 		uint8_t mybuf[65536];
 	} sbuf;
 	struct sockaddr_in sin;
@@ -272,18 +278,27 @@ void	packet_send(struct peer *dst, uint16_t src, uint8_t *p, int len)
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = dst->ip;
-	sin.sin_port = htons(47);
 
-	memcpy(sbuf.gre.magic, GREHDR, GREHDRSZ);
-	sbuf.gre.len = htons(len);
-	sbuf.gre.tid = dst->tid;
-	memcpy(sbuf.gre.data, p, len);
+	if (dst->ip == dst->tid) {
+		/* etherip */
+		sin.sin_port = htons(97);
+		sbuf.eip.stuff = htons(768);
+		memcpy(sbuf.eip.data,p,len);
+		sendto(fdraw2, sbuf.mybuf, len+2, 0, (struct sockaddr*) &sin, sizeof(sin));
+	} else {
+		/* mtk eoip */
+		sin.sin_port = htons(47);
+		memcpy(sbuf.gre.magic, GREHDR, GREHDRSZ);
+		sbuf.gre.len = htons(len);
+		sbuf.gre.tid = dst->tid;
+		memcpy(sbuf.gre.data, p, len);
+		sendto(fdraw, sbuf.mybuf, len+8, 0, (struct sockaddr*) &sin, sizeof(sin));
+	}
 
-	sendto(fdraw, sbuf.mybuf, len+8, 0, (struct sockaddr*) &sin, sizeof(sin));
 }
 
 /* receive one packet */
-void	receive_packet(uint8_t *p, int len, uint32_t srcip, uint16_t srctid)
+void	receive_packet(uint8_t *p, int len, uint32_t srcip, uint32_t srctid)
 {
 	if (!srcadd(p+6, srcip, srctid, len)) return;
 	packet_send(dstfind(p), srctid, p, len);
@@ -425,7 +440,7 @@ int main(int argc, char *argv[])
 
 		/* got mtk GRE packet */
 		if (FD_ISSET(fdraw, &fds)) {
-			uint16_t tid;
+			uint32_t tid;
 			len = recv(fdraw, pkt.buf, sizeof(pkt), 0);
 
 			/* but not for us */
@@ -481,7 +496,6 @@ int main(int argc, char *argv[])
 #endif
 			if (len >= 12)
 				receive_packet(p, len,pkt.ip.saddr, pkt.ip.saddr);
-
 		}
 
 		/* local tap */
