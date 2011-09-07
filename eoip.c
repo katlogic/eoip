@@ -47,7 +47,7 @@
 #define DUMPING 1
 
 
-#if 0
+#if 1
 #define DEBUG printf
 #else
 #define DEBUG(x...)
@@ -58,11 +58,14 @@
 #define GREHDR "\x20\x01\x64\x00"
 #define GREHDRSZ 4
 
+#define EHDR "\x00\x00"
+#define EHDRSZ 2
+
 /* virtual switch port */
 struct	peer {
 	struct peer *next;
 	uint32_t ip;
-	uint16_t tid;
+	uint32_t tid;
 	int count;
 };
 
@@ -95,7 +98,7 @@ static char *statusfile = NULL;
 /* list of currently connected tunnels */
 
 /* data sockets */
-static int	fdtap, fdraw;
+static int	fdtap, fdraw, fdraw2;
 static time_t	now;
 
 /* ip to string */
@@ -384,10 +387,16 @@ int main(int argc, char *argv[])
 		LOG("FIXED/Running in fixed mode");
 
 	fdraw = socket(AF_INET, SOCK_RAW, 47);
+	fdraw2 = socket(AF_INET, SOCK_RAW, 97);
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = myip;
 	sin.sin_port = htons(47);
 	assert(bind(fdraw, (struct sockaddr*)&sin, sizeof(sin))==0);
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = myip;
+	sin.sin_port = htons(97);
+	assert(bind(fdraw2, (struct sockaddr*)&sin, sizeof(sin))==0);
+
 
 	FD_ZERO(&fds);
 	ioctl(fdtap, TUNSETNOCSUM, 1);
@@ -400,11 +409,12 @@ int main(int argc, char *argv[])
 
 		FD_SET(fdtap, &fds);
 		FD_SET(fdraw, &fds);
+		FD_SET(fdraw2, &fds);
 
 		tv.tv_sec = 1;
 		tv.tv_usec = 0;
 
-		select(max(fdtap,fdraw)+1,&fds,NULL,NULL,&tv);
+		select(max(max(fdtap,fdraw),fdraw2)+1,&fds,NULL,NULL,&tv);
 		now=time(NULL);
 
 		/* time for gc? */
@@ -413,7 +423,7 @@ int main(int argc, char *argv[])
 			collect_garbage();
 		}
 
-		/* got GRE packet */
+		/* got mtk GRE packet */
 		if (FD_ISSET(fdraw, &fds)) {
 			uint16_t tid;
 			len = recv(fdraw, pkt.buf, sizeof(pkt), 0);
@@ -449,6 +459,31 @@ int main(int argc, char *argv[])
 			if (len >= 12)
 				receive_packet(p, len,pkt.ip.saddr, tid);
 		}
+
+		/* got etherip packet */
+		if (FD_ISSET(fdraw2, &fds)) {
+			len = recv(fdraw2, pkt.buf, sizeof(pkt), 0);
+
+			/* but not for us */
+			if (pkt.ip.daddr != myip) continue;
+
+			/* move past ip header */
+			p = pkt.buf + pkt.ip.ihl*4; len -= pkt.ip.ihl*4;
+
+			if ((ntohs(((uint16_t*)p)[0]))!=768) continue;
+			p += 2;
+			len -= 2;
+#if DUMPING
+			int i;
+			DEBUG("len=%d\n",len);
+			for (i = 0; i < len; i++) DEBUG("%02hhx ", p[i]);
+			DEBUG("\n\n");
+#endif
+			if (len >= 12)
+				receive_packet(p, len,pkt.ip.saddr, pkt.ip.saddr);
+
+		}
+
 		/* local tap */
 		if (FD_ISSET(fdtap, &fds)) {
 			p = pkt.buf;
