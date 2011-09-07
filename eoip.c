@@ -80,7 +80,7 @@ struct macpair {
 struct gre_packet {
 	uint8_t magic[4];
 	uint16_t len;
-	uint32_t tid;
+	uint16_t tid;
 	char data[0];
 };
 struct eip_packet {
@@ -275,6 +275,7 @@ void	packet_send(struct peer *dst, uint32_t src, uint8_t *p, int len)
 
 	/* regular peer */
 	if (!dst->ip) return; /* not associated yet */
+
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = dst->ip;
