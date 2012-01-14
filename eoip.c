@@ -34,6 +34,7 @@
 /* Hardcoded consts */
 #define GCTIME 10
 
+#define ETHERIP 65535
 
 #define max(a,b) ((a)>(b) ? (a):(b))
 #define HASHSZ 8192
@@ -114,42 +115,44 @@ static	char *ip2s(uint32_t ip)
 	return inet_ntoa(addr);
 }
 
-/* register new tunnel (optionally increment usage coutn) */
+/* register new tunnel (optionally increment usage count) */
 static	struct peer *port_get(uint32_t ip, uint32_t tid, int inc)
 {
 	struct peer *curr;
+	uint32_t key = tid==ETHERIP?ip:tid;
 	DEBUG("port add %d\n", tid);
-	
-	for (curr = peertab[tid % HASHSZ]; curr; curr = curr->next) {
-		if (curr->tid == tid) {
+
+	for (curr = peertab[key % HASHSZ]; curr; curr = curr->next) {
+		if ((tid== ETHERIP && curr->ip == ip) || (curr->tid == tid)) {
 			curr->count+=inc;
 			DEBUG(" -> count %d\n", curr->count);
 			return curr;
 		}
 	}
-	if (fixedmode==2) return NULL;
+	if (fixedmode==2 && tid != ETHERIP) return NULL;
 	curr = malloc(sizeof(*curr));
 	curr->ip = ip;
 	curr->count = inc;
 	curr->next = peertab[tid%HASHSZ];
 	curr->tid = tid;
-	peertab[tid%HASHSZ] = curr;
+	peertab[key%HASHSZ] = curr;
 	LOG("REG/Discovered peer/" PORTF, PORTA(curr));
 	return curr;
 }
 
 /* remove port */
-static	void port_put(uint32_t tid)
+static	void port_put(uint32_t ip, uint32_t tid)
 {
 	struct peer *curr, *prev = NULL;
+	uint32_t key = tid==ETHERIP?ip:tid;
 	DEBUG("port del %d\n", tid);
-	for (curr = peertab[tid % HASHSZ]; curr; prev = curr, curr = curr->next) {
-		if (curr->tid == tid) {
+	for (curr = peertab[key % HASHSZ]; curr; prev = curr, curr = curr->next) {
+		if ((curr->tid == tid && tid != 65535) || (tid == 65535 && curr->tid == 65535 && curr->ip == ip)) {
 			if (--curr->count <= 0) {
 				LOG("UNREG/Removed peer/" PORTF, PORTA(curr));
 				DEBUG("  -> count 0, freeing, %p\n", curr->next);
 				if (!prev) {
-					peertab[tid%HASHSZ] = curr->next;
+					peertab[key%HASHSZ] = curr->next;
 				} else {
 					prev->next = curr->next;
 				}
@@ -200,7 +203,7 @@ static struct peer *dstfind(uint8_t *mac)
 }
 
 /* learn a mac addr. returns pair if known */
-static	int srcadd(uint8_t *mac, uint32_t port, uint32_t porttid, int len)
+static	int srcadd(uint8_t *mac, uint32_t portip, uint32_t porttid, int len)
 {
 	uint32_t key = machash(mac);
 	struct macpair *mp;
@@ -214,7 +217,7 @@ static	int srcadd(uint8_t *mac, uint32_t port, uint32_t porttid, int len)
 
 	/* nope. */
 	if (!mp) {
-		struct peer *np = port_get(port, porttid, 1);
+		struct peer *np = port_get(portip, porttid, 1);
 		if (!np) return 0;
 		DEBUG("new mac " MACF "\n", MACA(mac));
 		mp = malloc(sizeof(*mp));
@@ -228,15 +231,15 @@ static	int srcadd(uint8_t *mac, uint32_t port, uint32_t porttid, int len)
 	/* refresh learning timer */
 	mp->last = now;
 	/* mac moved */
-	if (mp->port->tid != porttid) {
-		struct peer *newport = port_get(port, porttid, 1);
+	if ((porttid == 65535 && mp->port->ip != portip) || (porttid != 65535 && mp->port->tid != porttid)) {
+		struct peer *newport = port_get(portip, porttid, 1);
 		if (!newport) return 0;
 		LOG("MOVEMAC: Moved mac between ports/" MACF "/" PORTF "/" PORTF "", MACA(mac), PORTA(mp->port), PORTA(newport));
-		port_put(mp->port->tid);
+		port_put(mp->port->ip, mp->port->tid);
 		mp->port = newport;
 	}
 	if (fixedmode!=2 || mp->port->ip==0)
-		mp->port->ip = port;
+		mp->port->ip = portip;
 	return 1;
 }
 
@@ -280,7 +283,7 @@ void	packet_send(struct peer *dst, uint32_t src, uint8_t *p, int len)
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = dst->ip;
 
-	if (dst->ip == dst->tid) {
+	if (dst->tid == 65535) {
 		/* etherip */
 		sin.sin_port = htons(97);
 		sbuf.eip.stuff = htons(768);
@@ -291,7 +294,7 @@ void	packet_send(struct peer *dst, uint32_t src, uint8_t *p, int len)
 		sin.sin_port = htons(47);
 		memcpy(sbuf.gre.magic, GREHDR, GREHDRSZ);
 		sbuf.gre.len = htons(len);
-		sbuf.gre.tid = dst->tid;
+		sbuf.gre.tid = dst->tid; /* little endian! */
 		memcpy(sbuf.gre.data, p, len);
 		sendto(fdraw, sbuf.mybuf, len+8, 0, (struct sockaddr*) &sin, sizeof(sin));
 	}
@@ -315,7 +318,7 @@ void	collect_garbage()
 			next = mp->next;
 			if (mp->last + mactimeout < now) {
 				LOG("EXPIREMAC/Mac address expired/" MACF "/" PORTF, MACA(mp->mac), PORTA(mp->port));
-				port_put(mp->port->tid);
+				port_put(mp->port->ip, mp->port->tid);
 				if (prev) {
 					prev->next = next;
 				} else mactab[key] = next;
@@ -394,20 +397,26 @@ int main(int argc, char *argv[])
 	port_get(0,0,1);
 	for (;optind < argc; optind++) {
 		in_addr_t peer = inet_addr(strtok(argv[optind],":"));
-		/* tunnel ip addresses will be locked */
+		char *eoipidstr = strtok(NULL, ":");
+		int eoipid = strcmp(eoipidstr, "etherip")?atoi(eoipidstr):ETHERIP;
+		/* tunnel ip addresses will be locked in case of eoip */
 		fixedmode=1;
-		assert(port_get(peer, atoi(strtok(NULL, ":")),1));
+		assert(port_get(peer, eoipid,1));
 	}
 	fixedmode=fixedmode*2;
 	if (fixedmode==2)
 		LOG("FIXED/Running in fixed mode");
 
 	fdraw = socket(AF_INET, SOCK_RAW, 47);
+
+	/* eoip socket */
 	fdraw2 = socket(AF_INET, SOCK_RAW, 97);
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = myip;
 	sin.sin_port = htons(47);
 	assert(bind(fdraw, (struct sockaddr*)&sin, sizeof(sin))==0);
+
+	/* etherip socket */
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = myip;
 	sin.sin_port = htons(97);
@@ -496,7 +505,7 @@ int main(int argc, char *argv[])
 			DEBUG("\n\n");
 #endif
 			if (len >= 12)
-				receive_packet(p, len,pkt.ip.saddr, pkt.ip.saddr);
+				receive_packet(p, len,pkt.ip.saddr, 65535);
 		}
 
 		/* local tap */
