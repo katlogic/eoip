@@ -1,4 +1,4 @@
-CFLAGS=-O0 -ggdb -Wall
+CFLAGS=-O2 -Wall
 all: eoip evlan
 eoip: eoip.c
 	$(CC) $(CFLAGS) -Wno-unused-result eoip.c -o eoip
