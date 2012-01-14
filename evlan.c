@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
 
 	fdtap = opentun(IFF_TAP|IFF_NO_PI, argv[1]);
 	locip = inet_addr(argv[2]);
-	remip = inet_addr(argv[2]);
+	remip = inet_addr(argv[3]);
 
 	/* eoip socket */
 	fdraw = socket(AF_INET, SOCK_RAW, 47);
