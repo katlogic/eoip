@@ -99,6 +99,7 @@ static struct peer *peertab[HASHSZ];
 static int mactimeout = 1800;
 static int filtering = 0;
 static int fixedmode = 0;
+static int ethermode = 0; /* promiscuously create etherip tunnels */
 static char *statusfile = NULL;
 
 /* list of currently connected tunnels */
@@ -119,23 +120,23 @@ static	char *ip2s(uint32_t ip)
 static	struct peer *port_get(uint32_t ip, uint32_t tid, int inc)
 {
 	struct peer *curr;
-	uint32_t key = tid==ETHERIP?ip:tid;
+	uint32_t key = (ip^tid) % HASHSZ;
 	DEBUG("port add %d\n", tid);
 
-	for (curr = peertab[key % HASHSZ]; curr; curr = curr->next) {
-		if ((tid== ETHERIP && curr->ip == ip) || (curr->tid == tid)) {
+	for (curr = peertab[key]; curr; curr = curr->next) {
+		if ((curr->ip == ip) && (curr->tid == tid)) {
 			curr->count+=inc;
 			DEBUG(" -> count %d\n", curr->count);
 			return curr;
 		}
 	}
-	if (fixedmode==2 && tid != ETHERIP) return NULL;
+	if (fixedmode==2 && (tid != ETHERIP || !ethermode)) return NULL;
 	curr = malloc(sizeof(*curr));
 	curr->ip = ip;
 	curr->count = inc;
 	curr->next = peertab[tid%HASHSZ];
 	curr->tid = tid;
-	peertab[key%HASHSZ] = curr;
+	peertab[key] = curr;
 	LOG("REG/Discovered peer/" PORTF, PORTA(curr));
 	return curr;
 }
@@ -144,15 +145,15 @@ static	struct peer *port_get(uint32_t ip, uint32_t tid, int inc)
 static	void port_put(uint32_t ip, uint32_t tid)
 {
 	struct peer *curr, *prev = NULL;
-	uint32_t key = tid==ETHERIP?ip:tid;
+	uint32_t key = (ip^tid) % HASHSZ;
 	DEBUG("port del %d\n", tid);
-	for (curr = peertab[key % HASHSZ]; curr; prev = curr, curr = curr->next) {
-		if ((curr->tid == tid && tid != 65535) || (tid == 65535 && curr->tid == 65535 && curr->ip == ip)) {
+	for (curr = peertab[key]; curr; prev = curr, curr = curr->next) {
+		if (curr->tid == tid && curr->ip == ip) {
 			if (--curr->count <= 0) {
 				LOG("UNREG/Removed peer/" PORTF, PORTA(curr));
 				DEBUG("  -> count 0, freeing, %p\n", curr->next);
 				if (!prev) {
-					peertab[key%HASHSZ] = curr->next;
+					peertab[key] = curr->next;
 				} else {
 					prev->next = curr->next;
 				}
@@ -395,11 +396,17 @@ int main(int argc, char *argv[])
 	myip = inet_addr(argv[optind++]);
 
 	port_get(0,0,1);
+
+	/* create static ports */
 	for (;optind < argc; optind++) {
 		in_addr_t peer = inet_addr(strtok(argv[optind],":"));
 		char *eoipidstr = strtok(NULL, ":");
 		int eoipid = strcmp(eoipidstr, "etherip")?atoi(eoipidstr):ETHERIP;
 		/* tunnel ip addresses will be locked in case of eoip */
+		if (eoipid == ETHERIP && !peer) {
+			ethermode=1;
+			continue;
+		}
 		fixedmode=1;
 		assert(port_get(peer, eoipid,1));
 	}
