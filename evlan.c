@@ -68,17 +68,21 @@ static	int opentun(int flags, char *name)
 void usage(char *a0)
 {
 	fprintf(stderr,
-		"%s <intf> <localip> <remoteip - eoip target>\n",a0);
+		"%s <intf> <localip> <remoteip - eoip target> [ignored vlan ids]\n",a0);
 	exit(254);
 }
 
 
 int main(int argc, char *argv[])
 {
-	int	fdtap, fdraw;
+	int	fdtap, fdraw, i;
+	unsigned char ignore[4096];
 
-	if (argc != 4)
+	if (argc < 4)
 		usage(argv[0]);
+	memset(ignore,0,sizeof(ignore));
+	for (i = 3; i < argc; i++)
+		ignore[atoi(argv[i])]=1;
 
 	fd_set fds;
 	struct	sockaddr_in sin;
@@ -146,6 +150,8 @@ int main(int argc, char *argv[])
 			if (len < 0) continue;
 
 			tid = ((uint16_t *) p)[-1]; /* tunnel id, actually 802.1q tag number */
+			if (tid > 4095) continue;
+			if (ignore[tid]) continue;
 
 			/* IP hdr/eoip length mismatch */
 			if (len != ntohs(((uint16_t*)p)[-2])) {
@@ -181,6 +187,7 @@ int main(int argc, char *argv[])
 			/* only tagged packets please */
 			if (p[12] != 0x81 || p[13] != 0x00) continue;
 			tid = ((p[14] << 8)&0xf00) | p[15];
+			if (ignore[tid]) continue;
 			memcpy(sbuf.gre.data, p, 12); /* src & dst mac */
 			memcpy(sbuf.gre.data + 12, p + 16, len-16); /* skip the tag */
 
