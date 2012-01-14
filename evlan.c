@@ -160,9 +160,9 @@ int main(int argc, char *argv[])
 #endif
 			/* shift src/dst mac by 4 bytes */
 			memmove(p-4,p,12);
-			p[12] = 0x81; p[13] = 0x00;
-			p[14] = /*0x40 | */(tid>>8);
-			p[15] = tid & 0xff;
+			p[12-4] = 0x81; p[13-4] = 0x00;
+			p[14-4] = /*0x40 | */(tid>>8);
+			p[15-4] = tid & 0xff;
 			write(fdtap, p-4, len+4);
 		}
 
