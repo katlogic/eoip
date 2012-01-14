@@ -180,7 +180,7 @@ int main(int argc, char *argv[])
 			if (len <= 14) continue;
 			/* only tagged packets please */
 			if (p[12] != 0x81 || p[13] != 0x00) continue;
-			tid = (p[14] << 8) | p[15];
+			tid = ((p[14] << 8)&0xf00) | p[15];
 
 			sin.sin_port = htons(47);
 			memcpy(sbuf.gre.magic, GREHDR, GREHDRSZ);
