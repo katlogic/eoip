@@ -44,6 +44,15 @@ Example:
 This will run the daemon in fixed p2p mode, ie single peer is allowed to establish tunnel via
 Tunnel ID 1234.
 
+Tunnel ID with value 'etherip' is special - etherip tunnels will be established instead, fe:
+
+    # eoip tap0 1.2.3.4 5.6.7.8:etherip
+
+Will establish single etherip tunnel between hosts 1.2.3.4 and 5.6.7.8. "open" etherip mode is
+achieved via:
+
+    # eoip tap0 1.2.3.4 0.0.0.0:etherip
+
 Modes of operation
 ------------------
 
