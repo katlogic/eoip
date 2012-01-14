@@ -177,17 +177,18 @@ int main(int argc, char *argv[])
 			p = pkt.buf;
 			len = read(fdtap, p, sizeof(pkt));
 			/* some sanity */
-			if (len <= 14) continue;
+			if (len <= 16) continue;
 			/* only tagged packets please */
 			if (p[12] != 0x81 || p[13] != 0x00) continue;
 			tid = ((p[14] << 8)&0xf00) | p[15];
+			memcpy(sbuf.gre.data, p, 12); /* src & dst mac */
+			memcpy(sbuf.gre.data + 12, p + 16, len-16); /* skip the tag */
 
 			sin.sin_port = htons(47);
 			memcpy(sbuf.gre.magic, GREHDR, GREHDRSZ);
-			sbuf.gre.len = htons(len);
+			sbuf.gre.len = htons(len - 4);
 			sbuf.gre.tid = tid; /* little endian! */
-			memcpy(sbuf.gre.data, p, len);
-			sendto(fdraw, sbuf.mybuf, len+8, 0, (struct sockaddr*) &sin, sizeof(sin));
+			sendto(fdraw, sbuf.mybuf, len+8-4, 0, (struct sockaddr*) &sin, sizeof(sin));
 		}
 	}
 }
