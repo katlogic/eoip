@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
@@ -176,6 +178,7 @@ static	uint32_t machash(uint8_t *x)
 
 static	int opentun(int flags, char *name)
 {
+	printf("Opening %s\n",name);
 	struct ifreq ifr;
 	int fd = open("/dev/net/tun", O_RDWR);
 	assert(fd>=0);
@@ -183,7 +186,7 @@ static	int opentun(int flags, char *name)
 	ifr.ifr_flags = flags;
 	strncpy(ifr.ifr_name, name, IFNAMSIZ);
 //	write(2, &ifr, sizeof(ifr));
-	ioctl(fd, TUNSETIFF, (void *) &ifr);
+	assert(ioctl(fd, TUNSETIFF, (void *) &ifr)==0);
 //	ioctl(fd, TUNSETPERSIST, 1);
 	return fd;
 }
@@ -329,31 +332,33 @@ void	collect_garbage()
 			prev = mp;
 		}
 	}
-	if (statusfile) {
-		struct peer *peer;
-		struct macpair *mac;
-		int i;
-		FILE *f = fopen(statusfile, "w+");
+}
 
-		for (i = 0; i < HASHSZ; i++) {
-			for (peer = peertab[i]; peer; peer = peer->next) {
-				fprintf(f, "%s %d\n", ip2s(peer->ip), peer->tid);
-			}
+void	write_status(int fd)
+{
+	struct peer *peer;
+	struct macpair *mac;
+	int i;
+	FILE *f = fdopen(fd, "w");
+
+	for (i = 0; i < HASHSZ; i++) {
+		for (peer = peertab[i]; peer; peer = peer->next) {
+			fprintf(f, "%s %d\n", ip2s(peer->ip), peer->tid);
 		}
-		fprintf(f, "\n");
-		for (i = 0; i < HASHSZ; i++) {
-			for (mac = mactab[i]; mac; mac = mac->next) {
-				fprintf(f, "%d " MACF "\n", mac->port->tid, MACA(mac->mac));
-			}
-		}
-		fclose(f);
 	}
+	fprintf(f, "\n");
+	for (i = 0; i < HASHSZ; i++) {
+		for (mac = mactab[i]; mac; mac = mac->next) {
+			fprintf(f, "%d " MACF "\n", mac->port->tid, MACA(mac->mac));
+		}
+	}
+	fclose(f);
 }
 
 void usage(char *a0)
 {
 	fprintf(stderr,
-		"%s [-f] [-s /tmp/statusfile] <intf> [<local> [<remote>:<tunnelid> <remote:tunnelid...>]]\n"
+		"%s [-f] [-s /tmp/statusfile] <intf> <local> [<remote>:<tunnelid> <remote:tunnelid...>]\n"
 		"Flags:\n"
 		"\t-f\tfilter switch ports\n"
 		"\t-t N\tmac address timeout (seconds, 1800 by default)\n"
@@ -368,6 +373,7 @@ int main(int argc, char *argv[])
 	int	lastgc = 0;
 	struct	sockaddr_in sin;
 	in_addr_t myip;
+	int statusfd;
 	int c;
 
 	union {
@@ -401,7 +407,7 @@ int main(int argc, char *argv[])
 	for (;optind < argc; optind++) {
 		in_addr_t peer = inet_addr(strtok(argv[optind],":"));
 		char *eoipidstr = strtok(NULL, ":");
-		int eoipid = strcmp(eoipidstr, "etherip")?atoi(eoipidstr):ETHERIP;
+		int eoipid = eoipidstr?atoi(eoipidstr):ETHERIP;
 		/* tunnel ip addresses will be locked in case of eoip */
 		if (eoipid == ETHERIP && !peer) {
 			ethermode=1;
@@ -433,6 +439,11 @@ int main(int argc, char *argv[])
 	FD_ZERO(&fds);
 	ioctl(fdtap, TUNSETNOCSUM, 1);
 
+	if (statusfile) {
+		unlink(statusfile);
+		assert(mknod(statusfile, S_IFIFO | 0666, 0)==0);
+	}
+		
 	/* ad nausea */
 	while (1) {
 		int len;
@@ -443,8 +454,11 @@ int main(int argc, char *argv[])
 		FD_SET(fdraw, &fds);
 		FD_SET(fdraw2, &fds);
 
-		tv.tv_sec = 1;
-		tv.tv_usec = 0;
+		if ((statusfd = open(statusfile, O_WRONLY | O_NONBLOCK)) >= 0)
+			write_status(statusfd);
+
+		tv.tv_sec = 0;
+		tv.tv_usec = 1000;
 
 		select(max(max(fdtap,fdraw),fdraw2)+1,&fds,NULL,NULL,&tv);
 		now=time(NULL);
