@@ -1,5 +1,5 @@
 /*
- * eoip tunnel daemon & virtual switch
+ * eoip, etherip tunnel daemon & virtual switch
  * (c) 2008-2011 Karel Tuma <karel.tuma@pilsfree.net>
  *
  * This program is free software; you can redistribute it and/or modify
