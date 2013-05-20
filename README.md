@@ -5,7 +5,7 @@ EOIP tunnels
 
 https://github.com/bbonev/eoip
 
-Are handy feature of RouterOS allowing easy setup of high-performance ethernet VPNs.
+EOIP tunnels are handy feature of RouterOS allowing easy setup of high-performance ethernet VPNs.
 For documentation and setup guide, see http://wiki.mikrotik.com/wiki/Manual:Interface/EoIP
 
 Protocol spec
