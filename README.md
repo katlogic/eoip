@@ -1,5 +1,10 @@
 EOIP tunnels
 ============
+
+*BREAKING NEWS* Boian Bonev implemented EOIP kernel module if that's what you're looking for:
+
+https://github.com/bbonev/eoip
+
 Are handy feature of RouterOS allowing easy setup of high-performance ethernet VPNs.
 For documentation and setup guide, see http://wiki.mikrotik.com/wiki/Manual:Interface/EoIP
 
