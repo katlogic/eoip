@@ -102,8 +102,6 @@ static int mactimeout = 1800;
 static int filtering = 0;
 static int fixedmode = 0;
 static int ethermode = 0; /* promiscuously create etherip tunnels */
-static char *statusfile = NULL;
-
 /* list of currently connected tunnels */
 
 /* data sockets */
@@ -136,7 +134,7 @@ static	struct peer *port_get(uint32_t ip, uint32_t tid, int inc)
 	curr = malloc(sizeof(*curr));
 	curr->ip = ip;
 	curr->count = inc;
-	curr->next = peertab[tid%HASHSZ];
+	curr->next = peertab[key];
 	curr->tid = tid;
 	peertab[key] = curr;
 	LOG("REG/Discovered peer/" PORTF, PORTA(curr));
@@ -235,7 +233,7 @@ static	int srcadd(uint8_t *mac, uint32_t portip, uint32_t porttid, int len)
 	/* refresh learning timer */
 	mp->last = now;
 	/* mac moved */
-	if ((porttid == 65535 && mp->port->ip != portip) || (porttid != 65535 && mp->port->tid != porttid)) {
+	if ((mp->port->ip != portip) || (mp->port->tid != porttid)) {
 		struct peer *newport = port_get(portip, porttid, 1);
 		if (!newport) return 0;
 		LOG("MOVEMAC: Moved mac between ports/" MACF "/" PORTF "/" PORTF "", MACA(mac), PORTA(mp->port), PORTA(newport));
@@ -334,25 +332,27 @@ void	collect_garbage()
 	}
 }
 
-void	write_status(int fd)
+void	write_status(char *fn, char *tmp)
 {
 	struct peer *peer;
 	struct macpair *mac;
 	int i;
-	FILE *f = fdopen(fd, "w");
+	FILE *f = fopen(tmp, "w");
 
 	for (i = 0; i < HASHSZ; i++) {
 		for (peer = peertab[i]; peer; peer = peer->next) {
-			fprintf(f, "%s %d\n", ip2s(peer->ip), peer->tid);
+			fprintf(f, "%s %d %d\n", ip2s(peer->ip), peer->tid, peer->count);
 		}
 	}
 	fprintf(f, "\n");
 	for (i = 0; i < HASHSZ; i++) {
 		for (mac = mactab[i]; mac; mac = mac->next) {
-			fprintf(f, "%d " MACF "\n", mac->port->tid, MACA(mac->mac));
+			fprintf(f, "%s:%d " MACF "\n", ip2s(mac->port->ip), mac->port->tid, MACA(mac->mac));
 		}
 	}
 	fclose(f);
+	/* this is atomic */
+	rename(tmp, fn);
 }
 
 void usage(char *a0)
@@ -373,8 +373,10 @@ int main(int argc, char *argv[])
 	int	lastgc = 0;
 	struct	sockaddr_in sin;
 	in_addr_t myip;
-	int statusfd;
 	int c;
+	char *statusfile = NULL;
+	char statustmp[1024];
+
 
 	union {
 		uint8_t buf[65536];
@@ -390,6 +392,7 @@ int main(int argc, char *argv[])
 			break;
 		case 's':
 			statusfile=optarg;
+			sprintf(statustmp, "%s.tmp", statusfile);
 			break;
 		default:
 			usage(argv[0]);
@@ -439,10 +442,6 @@ int main(int argc, char *argv[])
 	FD_ZERO(&fds);
 	ioctl(fdtap, TUNSETNOCSUM, 1);
 
-	if (statusfile) {
-		unlink(statusfile);
-		assert(mknod(statusfile, S_IFIFO | 0666, 0)==0);
-	}
 		
 	/* ad nausea */
 	while (1) {
@@ -454,9 +453,6 @@ int main(int argc, char *argv[])
 		FD_SET(fdraw, &fds);
 		FD_SET(fdraw2, &fds);
 
-		if ((statusfd = open(statusfile, O_WRONLY | O_NONBLOCK)) >= 0)
-			write_status(statusfd);
-
 		tv.tv_sec = 0;
 		tv.tv_usec = 1000;
 
@@ -467,6 +463,8 @@ int main(int argc, char *argv[])
 		if (now-lastgc > GCTIME) {
 			lastgc = now;
 			collect_garbage();
+			if (statusfile)
+				write_status(statusfile, statustmp);
 		}
 
 		/* got mtk GRE packet */
